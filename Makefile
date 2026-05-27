@@ -9,7 +9,10 @@ CXX := g++
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra
 LDFLAGS := -lpthread
 
-server: main.cpp cmdline.cpp webserver.cpp
+CPPS = main.cpp cmdline.cpp webserver.cpp \
+	 epoller.cpp http_conn.cpp timer.cpp log.cpp
+
+server: $(CPPS)
 	$(CXX) $(CXXFLAGS) -o server $^ $(LDFLAGS)
 
 clean:
