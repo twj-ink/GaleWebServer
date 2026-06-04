@@ -28,10 +28,14 @@ main()
 
 ## 性能
 
-测试环境: WSL2 / 8 线程 / Webbench 1.5。4% 失败率为 Webbench 自身限制。裸 Linux 下 QPS 更高。
+测试环境: 
 
-在上千并发的情况下，QPS大致稳定在2880，且有 4% 的失败率。
+* WSL2 | 8 线程 | Webbench 1.5：在上千并发的情况下，QPS大致稳定在2880，且有 4% 的失败率。
+* Ubuntu 6.17.0-22-generic | 8 线程 | Webbench 1.5：在上千并发的情况下，QPS能达到20000。但是在上万并发时会有非常多（超过一半）的连接失败。
 
+![](./imgs/running-server.png)
+
+![](./imgs/webbench-on-ubuntu.png)
 
 ## 构建 & 运行
 
