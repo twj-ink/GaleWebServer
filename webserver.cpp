@@ -120,6 +120,7 @@ void WebServer::eventLoop()
                        ntohs(client_addr.sin_port));
 
                 m_users[connfd].init(connfd, client_addr);
+                m_users[connfd].set_epoller(&m_epoller);
                 m_users[connfd].set_timer(&m_timer_nodes[connfd]);
                 m_timer_list.add_timer(&m_timer_nodes[connfd]);
                 m_epoller.add_fd(connfd, EPOLLIN);// 监听读事件

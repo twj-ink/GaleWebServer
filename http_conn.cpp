@@ -5,6 +5,7 @@
  */
 
 #include "include/http_conn.h"
+#include "include/epoller.h"
 #include "include/log.h"
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -153,11 +154,14 @@ void HttpConn::process()
     if (ret == GET_REQUEST) {
         LOG_INFO("fd=%d: %s %s -> 200", m_sockfd, m_method, m_url);
         write_response();
-    } else if (ret == BAD_REQUEST) {
+        close_conn();
+    } else if (ret == NO_REQUEST) {
+        // 数据不完整，重新注册 ONESHOT 等待下次数据
+        m_epoller->mod_fd(m_sockfd, EPOLLIN);
+    } else {
         LOG_WARN("fd=%d: BAD_REQUEST, method=%s url=%s", m_sockfd, m_method, m_url);
+        close_conn();
     }
-    // close(m_sockfd); /
-    close_conn();
 }
 
 bool HttpConn::write_response()

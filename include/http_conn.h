@@ -12,6 +12,7 @@
 #include <ctime>
 
 struct TimerNode; // 前向声明，避免循环依赖
+class Epoller;      // 前向声明
 
 // 主状态机的状态    
 enum PARSE_STATE {
@@ -61,6 +62,7 @@ private:
     const char* get_mime_type(const char* path);
 
     TimerNode* m_timer;
+    Epoller* m_epoller;
 
 public:
     HttpConn();
@@ -74,6 +76,7 @@ public:
 
     void set_timer(TimerNode* timer) { m_timer = timer; }
     TimerNode* get_timer() const { return m_timer; }
+    void set_epoller(Epoller* ep) { m_epoller = ep; }
     void close_conn();
     int get_sockfd() const { return m_sockfd; }
 

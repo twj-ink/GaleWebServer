@@ -1433,3 +1433,223 @@ Log 模块有一个同根的 bug：`init` 中用 `new char[1024]` 预分配，�
 3. **预分配数组 + 链表引用**的模式下，链表只负责串联，不负责释放——释放权归持有数组的那个类
 4. `-g -O0` 编译是排查崩溃的标准第零步，没符号表 GDB 什么都帮不了
 5. 如果 `bt` 没有自己的代码帧而是全是 `??` —— 说明编译没加 `-g`
+
+---
+
+## 附录：多线程进阶面试问答
+
+### 多线程加锁的性能开销
+
+锁的本质是**把并行变成串行**。开销来自三个方面：
+
+**① 抢锁本身的 CPU 开销**
+
+```cpp
+m_mutex.lock();   // → futex 系统调用（如果无竞争，只是原子操作，几十个 CPU 周期）
+m_mutex.unlock(); // → 同上
+```
+
+无竞争时（fast path）锁就是一次原子 CAS，约 20-50 个 CPU 周期。有竞争时触发 futex 系统调用 → 内核介入 → 数千到上万个周期。
+
+**② 串行化造成的并行度损失**
+
+```
+8 个线程抢同一把锁：
+  线程 1: lock → 干活 → unlock  (其他 7 个线程在等)
+  线程 2: lock → 干活 → unlock  (其他 7 个线程在等)
+  ...
+  表面上 8 线程并行，实际串行
+```
+
+Amdahl 定律：串行部分占比 S，加速比上限 = 1/S。如果临界区占用 10% 时间，最多快 10 倍，再加线程也没用。
+
+**③ 伪共享（False Sharing）**
+
+```cpp
+struct {
+    int counter_a;  // 线程 A 频繁写
+    int counter_b;  // 线程 B 频繁写
+} stats;            // 两个变量在同一缓存行（64 字节）
+
+// 线程 A 写 counter_a → 缓存行被标记"脏"
+// 线程 B 写 counter_b → 缓存行失效，重新从内存加载
+// 两个线程互相使对方的缓存失效 → 每次写都是内存访问速度
+```
+
+一个缓存行 64 字节，两个不相关的变量凑在一块就是伪共享。
+
+**你的项目中**：
+- 线程池的任务队列锁保护很短的临界区（入队/出队几行），无竞争概率高（用 ONESHOT 保证一个 fd 同时只被通知一次）
+- 日志系统的环形队列同理
+- 真正的瓶颈不在锁，在非阻塞 socket 的 EAGAIN 循环 + 内存分配（strdup/new）
+
+---
+
+### 频繁使用锁如何避免死锁
+
+死锁四个必要条件（缺一不可）：
+
+```
+1. 互斥：资源只能被一个线程持有
+2. 持有并等待：持有一个资源的同时等待另一个
+3. 不可剥夺：不能强行抢走别人持有的锁
+4. 循环等待：A 等 B、B 等 C、C 等 A
+```
+
+**防御策略（打破任一条件即可）**：
+
+**① 锁排序（打破循环等待）**
+
+```cpp
+// ❌ 死锁可能
+线程 A: lock(lock1); lock(lock2);
+线程 B: lock(lock2); lock(lock1);  // 顺序相反 → 交叉等 → 死锁
+
+// ✓ 全局约定锁顺序
+线程 A: lock(lock1); lock(lock2);
+线程 B: lock(lock1); lock(lock2);  // 同样顺序 → 不会死锁
+```
+
+你项目里隐式遵守了：先拿资源锁（empty/full）再拿互斥锁（mutex），顺序固定。
+
+**② 减小锁粒度（减少持有并等待的概率）**
+
+```cpp
+// ❌ 大锁
+lock_big();
+do_io();    // 慢，持着锁
+do_cpu();   // 也持着锁
+unlock_big();
+
+// ✓ 小锁 + 读写分开
+lock_small();
+queue.pop();  // 只保护共享数据结构
+unlock_small();
+do_io();      // 不持锁
+do_cpu();     // 不持锁
+```
+
+你的代码里 `fputs`/`fflush` 时解锁、线程池 `process()` 时解锁——都是这个原则。
+
+**③ 超时 + 回退（打破持有并等待）**
+
+```cpp
+if (!try_lock_timeout(500ms)) {
+    unlock_all();    // 释放已持有的
+    sleep(random());  // 随机后退，防止活锁
+    retry();
+}
+```
+
+你的代码没用到——但 `cond::wait_timeout` 就是这个方向的。
+
+**④ RAII + scope_lock（避免忘记解锁）**
+
+你的 `scope_lock` 类就是这个——异常或提前 return 自动解锁，不会遗忘。
+
+---
+
+### 无锁化编程
+
+**核心思想：不用互斥锁，用原子操作完成并发安全。**
+
+**① 原子变量替代互斥锁保护的计数器**
+
+```cpp
+// 有锁版
+int counter;
+locker lk;
+void inc() { lk.lock(); counter++; lk.unlock(); }
+
+// 无锁版
+std::atomic<int> counter;
+void inc() { counter.fetch_add(1, std::memory_order_relaxed); }
+```
+
+`fetch_add` 是 CPU 的一条原子指令（LOCK XADD），不需操作系统介入。几十个 CPU 周期 vs 几千个（有竞争时）。
+
+**② CAS（Compare-And-Swap）循环实现无锁数据结构**
+
+```cpp
+// 无锁栈的 push
+void push(Node* node) {
+    do {
+        node->next = head.load();
+    } while (!head.compare_exchange_weak(node->next, node));
+    // 如果 head 被其他线程改了 → CAS 失败 → 重试
+}
+```
+
+**③ RCU（Read-Copy-Update）— 读者零开销**
+
+```cpp
+// 读多写少的场景（你的 HttpConn 数组就类似）
+// 读者：不加锁，直接读（可能读到旧版本，没关系）
+// 写者：拷贝一份 → 修改 → 原子指针替换 → 等所有读者结束 → 释放旧版本
+```
+
+**④ 你的项目里本就无锁的地方**
+
+- `HttpConn` 数组的读——ONESHOT 保证同时只有一个线程处理一个连接，无竞争
+- 主线程和 worker 线程的数据边界——主线程只写 `m_read_buf`（在 `read_once` 中），worker 线程只读——天然的"单生产者单消费者"同步
+
+---
+
+### 内存泄漏如何检测
+
+**① Valgrind — 最全面的工具**
+
+```bash
+# 编译时保留调试符号
+make CXXFLAGS="-std=c++17 -g -O0 -Wall"
+
+# Valgrind 跑
+valgrind --leak-check=full --show-leak-kinds=all ./server -p 8080
+
+# 浏览器访问几次后 Ctrl+C，Valgrind 输出:
+# ==12345== 100 bytes in 1 blocks are definitely lost
+# ==12345==    at 0x...: malloc
+# ==12345==    by 0x...: strdup (log.cpp:105)
+# ==12345==    by 0x...: Log::write_log (log.cpp:105)
+```
+
+直接精确到**源文件:行号**。
+
+**② AddressSanitizer (ASan) — 编译器内置，运行时快**
+
+```bash
+g++ -fsanitize=address -g -O0 -o server *.cpp ...
+
+./server -p 8080
+# 如果有 use-after-free、buffer overflow、内存泄漏 → ASan 直接报
+```
+
+比 Valgrind 快 5-10 倍，适合日常开发。
+
+**③ 你的项目里最容易泄漏的点**
+
+| 位置 | 你怎么处理的 |
+|------|------------|
+| `log.cpp` write_log → `strdup` | `flush_to_file` 里 `free(str)` ✓ |
+| `http_conn.cpp` serve_static → `new char[]` | 同函数末尾 `delete[] file_buf` ✓ |
+| `webserver.cpp` init → `new HttpConn[MAX_FD]` | `~WebServer` 中 `delete[] m_users` ✓ |
+| `threadpool` → 外部传入的 `T* request` | 外部管理生命周期（HttpConn 数组），不在此释放 ✓ |
+
+**④ 面试怎么说**
+
+> 内存泄漏用 Valgrind 和 ASan 检测。Valgrind 能精确到泄漏的源文件行号。ASan 是编译器插桩，运行时开销比 Valgrind 小 5-10 倍。写代码时遵循"谁分配谁释放"——比如日志的 strdup 在 flush_to_file 里 free，HttpConn 数组在 WebServer 析构里 delete[]。预分配数组 + 链表引用的模式要特别小心——链表只能串起数组元素不能 delete 单个元素，释放权归持有数组的类。
+
+---
+
+### 线程池 vs 单线程 对比总结
+
+| | 单线程（串行） | 多线程（你的项目） |
+|---|-------------|----------------|
+| 实现 | 简单，无锁 | 复杂，锁 + 条件变量 + 任务队列 |
+| 一个慢请求的影响 | 卡住后面所有人 | 只卡一个线程，其他人继续 |
+| 锁开销 | 无 | 入队/出队时加锁，几十到几百 CPU 周期 |
+| CPU 利用 | 只用 1 核 | 8 个线程利用 8 核 |
+| 调试 | 简单 | 死锁、竞态、数据竞争难复现 |
+| 适用 | 低并发、纯 I/O 场景 | 高并发、CPU+IO 混合场景 |
+
+你的项目选多线程是合理的——HTTP 请求的处理（解析、读文件、构建响应）有 CPU 计算，需要多核并行。如果纯做 I/O 转发（代理服务器），单线程 + epoll 就够。

@@ -1,6 +1,11 @@
-# GaleWebServer — 轻量级 C++ Web 服务器
+# GaleWebServer
 
-Linux 下基于 epoll + 线程池的高并发 Web 服务器，支持静态文件服务、HTTP GET/POST 解析、数据库连接池、同步/异步日志。
+Linux 下的轻量级 C++ Web 服务器。
+
+* 使用 **线程池 + 非阻塞socket + epoll(ET和LT均实现) + 模拟Proactor事件处理** 的并发模型
+* 使用 **有限状态机** 解析HTTP请求报文，支持解析 **GET** 请求，可以请求服务器 **静态文件**
+* 实现 **同步/异步日志系统** ，记录服务器运行状态和错误信息
+* 经过Webbench压力测试可以实现3000QPS的吞吐量
 
 ## 技术栈
 
