@@ -2,46 +2,36 @@
 
 Linux 下的轻量级 C++ Web 服务器。
 
-* 使用 **线程池 + 非阻塞socket + epoll(ET和LT均实现) + 模拟Proactor事件处理** 的并发模型
-* 使用 **有限状态机** 解析HTTP请求报文，支持解析 **GET** 请求，可以请求服务器 **静态文件**
-* 实现 **同步/异步日志系统** ，记录服务器运行状态和错误信息
-* 经过Webbench压力测试可以实现3000QPS的吞吐量
-
-## 技术栈
-
-- **并发模型**: 线程池 + 非阻塞 socket + epoll (LT/ET) + 模拟 Proactor
-- **HTTP**: 有限状态机解析 GET/POST 请求
-- **数据库**: MySQL 连接池实现用户注册、登录
-- **文件服务**: 静态资源（HTML / 图片 / 视频）
-- **日志**: 同步 / 异步可切换，环形队列 + 后台线程批量写
-- **定时器**: 升序双向链表，epoll_wait 超时驱动，O(1) 调整
+1. **并发模型**: 使用 **线程池 + 非阻塞socket + epoll(ET和LT均实现) + 模拟Proactor事件处理** 的并发模型
+2. **HTTP**: 使用 **有限状态机** 解析HTTP请求报文，支持解析 **GET** 请求，可以请求服务器 **静态文件**
+3. **日志系统**: 实现 **同步/异步日志系统** ，记录服务器运行状态和错误信息
+4. **定时器**: 采用双向链表维护每个连接的可活动时长，**epoll_wait 超时驱动，O(1) 调整**
+5. **压力测试**: 经过Webbench压力测试可以实现 **3000QPS 的吞吐量**
 
 ## 架构
 
 ```
 main()
-  ├── Cmdline:      命令行参数（端口、日志模式）
+  ├── Cmdline:              命令行参数（端口、epoll模式、日志模式）
   └── WebServer:
-        ├── Epoller:        epoll 实例，监控所有 fd
+        ├── Epoller:        epoll 实例，监控所有 fd，ET/LT可选择
         ├── threadpool:     8 个工作线程（模拟 Proactor）
         ├── HttpConn[]:     预分配数组，下标 = fd
         ├── TimerList:      双向链表，管理连接超时
-        ├── Log:            单例，同步/异步可切换
+        ├── Log:            单例，同步/异步可选择
         └── eventLoop():
-              epoll_wait 返回就绪 fd
-              → accept / read_once（主线程代理 I/O）
-              → pool.append（交给工作线程）
-              → process() 解析 HTTP + 返回响应
+              epoll_wait            返回就绪 fd
+              → accept / read_once （模拟Proactor，主线程代理 I/O）
+              → pool.append        （交给工作线程）
+              → process()           解析 HTTP + 返回响应
 ```
 
 ## 性能
 
-| 并发 | 持续时间 | 成功请求 | QPS | 测试页面 |
-|------|---------|---------|-----|---------|
-| 500  | 10s     | 29,413  | 2,941 | index.html |
-| 1000 | 30s     | 86,894  | 2,896 | index.html |
+测试环境: WSL2 / 8 线程 / Webbench 1.5。4% 失败率为 Webbench 自身限制。裸 Linux 下 QPS 更高。
 
-> 测试环境: WSL2 / 8 线程 / Webbench 1.5。4% 失败率为 Webbench 自身限制。裸 Linux 下 QPS 更高。
+在上千并发的情况下，QPS大致稳定在2880，且有 4% 的失败率。
+
 
 ## 构建 & 运行
 
