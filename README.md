@@ -67,7 +67,7 @@ $ ./server -p 8080 -l 1
       * wrk：并发数10000，线程数4个，持续时间5s，命令为:`wrk -c 10000 -t 4 -d 5s http://localhost:8080/`
 * 测试机器：
       * WSL2 on Windows 11
-      * Ubuntu 24.04 (Linux 6.8)`用lsb_release -d`
+      * Ubuntu 25.10 裸Linux
 
 > * WSL2参数
 
@@ -75,21 +75,26 @@ $ ./server -p 8080 -l 1
 
 > * 裸 Linux 参数
 
-??????
+![](./imgs/linux-参数.png)
 
 * 测试结果：
 
-> * WSL2 + 小文件 + Webbench
+> * WSL2 + 小文件 + Webbench，QPS=2000，失败率0%
 ![](./imgs/wsl-小文件-加入EPOLLOUT-webbench.png)
-> * WSL2 + 小文件 + wrk
+> * WSL2 + 小文件 + wrk，QPS=1600，失败率0%
 ![](./imgs/wsl-小文件-加入EPOLLOUT-wrk.png)
-> * 裸 Linux + 小文件 + Webbench
-
-> * 裸 Linux + 小文件 + wrk
+> * 裸 Linux + 小文件 + Webbench，QPS=17800，失败率12%
+![](./imgs/linux-小文件-加入EPOLLOUT-webbench.png)
+> * 裸 Linux + 小文件 + wrk，QPS=16100，失败率0%
+![](./imgs/linux-小文件-加入EPOLLOUT-wrk.png)
 
 * 测试结论：
 
-在小文件传输的情况下，在WSL2上webbench-qps-2000，wrk-pqs-1600；在裸Linux上？？？
+在**小文件**传输的情况下，在WSL2上QPS可以达到2000，在裸Linux上可以达到17000。
+
+因此可以说，当前的服务器在Linux下可以实现在**上万并发连接**的情况下达到**上万QPS**。
+
+> 注：由于Webbench自身问题，连接数最多只能设置为4000左右，因此这里选定1000为标准进行测试。上万连接使用wrk进行测试。
 
 ## 构建 & 运行
 
