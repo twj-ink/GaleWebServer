@@ -153,10 +153,11 @@ void HttpConn::process()
     HTTP_CODE ret = parse_request();
     if (ret == GET_REQUEST) {
         LOG_INFO("fd=%d: %s %s -> 200", m_sockfd, m_method, m_url);
-        write_response();
-        close_conn();
+        m_file_buf = nullptr;                      // 非文件响应
+        write_response();                          // 构建到 m_write_buf
+        m_write_offset = 0;
+        m_epoller->mod_fd(m_sockfd, EPOLLOUT);     // 注册写事件
     } else if (ret == NO_REQUEST) {
-        // 数据不完整，重新注册 ONESHOT 等待下次数据
         m_epoller->mod_fd(m_sockfd, EPOLLIN);
     } else {
         LOG_WARN("fd=%d: BAD_REQUEST, method=%s url=%s", m_sockfd, m_method, m_url);
@@ -186,11 +187,45 @@ bool HttpConn::write_response()
     return false;
 }
 
-bool HttpConn::write()
+bool HttpConn::write_once()
 {
-    int bytes = send(m_sockfd, m_write_buf, m_write_idx, 0);
-    if (bytes < 0) return false;
-    LOG_INFO("fd=%d: sent %d bytes:\n%.*s", m_sockfd, bytes, bytes, m_write_buf);
+    // 先发头部
+    while (m_write_offset < m_write_idx)
+    {
+        int bytes = send(m_sockfd, m_write_buf + m_write_offset,
+                         m_write_idx - m_write_offset, 0);
+        if (bytes < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return false;
+            LOG_ERROR("fd=%d: send failed: %s", m_sockfd, strerror(errno));
+            return false;
+        }
+        m_write_offset += bytes;
+    }
+
+    // 头部发完，发文件 body
+    if (m_file_buf)
+    {
+        while (m_file_sent < m_file_size)
+        {
+            int bytes = send(m_sockfd, m_file_buf + m_file_sent,
+                             m_file_size - m_file_sent, 0);
+            if (bytes < 0)
+            {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    return false;
+                LOG_ERROR("fd=%d: send file failed: %s", m_sockfd, strerror(errno));
+                return false;
+            }
+            m_file_sent += bytes;
+        }
+        delete[] m_file_buf;
+        m_file_buf = nullptr;
+    }
+
+    LOG_INFO("fd=%d: response sent, %d+%ld bytes",
+             m_sockfd, m_write_idx, m_file_sent);
     return true;
 }
 
@@ -241,27 +276,12 @@ bool HttpConn::serve_static()
           "\r\n",
           mime, total_read);
 
-    // 7. 发头部
-    write();
+    // 7. 存文件 buffer，等 write_once 发送
+    m_file_buf = file_buf;
+    m_file_size = total_read;
+    m_file_sent = 0;
 
-    // 8. 循环发送文件内容（大文件一次 send 发不完）
-    ssize_t total_sent = 0;
-    while (total_sent < total_read)
-    {
-        ssize_t n = send(m_sockfd, file_buf + total_sent,
-                         total_read - total_sent, 0);
-        if (n < 0)
-        {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-                continue;         // 非阻塞模式下缓冲区满，重试
-            break;                // 真正的错误
-        }
-        total_sent += n;
-    }
-
-    LOG_INFO("fd=%d: served %s, %ld bytes", m_sockfd, file_path, total_sent);
-
-    delete[] file_buf;
+    LOG_INFO("fd=%d: ready to serve %s, %ld bytes", m_sockfd, file_path, total_read);
     return true;
 }
 
@@ -291,7 +311,7 @@ bool HttpConn::send_error_page(int code)
         "\r\n"                                                              
         "%s",                                                               
         code, title, (int)strlen(body), body);
-    return write(); // 直发头部
+    return true;
 }
 
 const char* HttpConn::get_mime_type(const char* path)
@@ -320,5 +340,5 @@ bool HttpConn::serve_dynamic()
         "\r\n"                                                              
         "%s",                                                               
         (int)strlen(body), body);
-    return write();
+    return true;
 }

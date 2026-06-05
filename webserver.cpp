@@ -137,7 +137,16 @@ void WebServer::eventLoop()
                 // 上面这个是串行，这里改成用线程池
                 // 定时器
                 m_timer_list.adjust_timer(m_users[fd].get_timer());
-                m_pool.append(&m_users[fd]);
+                if (!m_pool.append(&m_users[fd]))
+                {
+                    LOG_WARN("fd=%d: threadpool full, dropping", fd);
+                    cleanup_conn(fd);
+                }
+            }
+            else if (events & EPOLLOUT)
+            {
+                if (m_users[fd].write_once())
+                    cleanup_conn(fd);
             }
         }
     }

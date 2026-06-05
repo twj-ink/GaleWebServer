@@ -55,9 +55,12 @@ private:
     static const int WRITE_BUFFER_SIZE = 2048;
     char m_write_buf[WRITE_BUFFER_SIZE];
     int m_write_idx;
-    bool write();
-    bool serve_static(); // 处理静态文件请求    
-    bool serve_dynamic(); // 处理动态文件请求
+    int m_write_offset;        // m_write_buf 已发送位置
+    char* m_file_buf;          // 大文件 body 缓冲区
+    ssize_t m_file_size;       // 文件总大小
+    ssize_t m_file_sent;       // 文件已发送
+    bool serve_static();
+    bool serve_dynamic();
     bool send_error_page(int code);
     const char* get_mime_type(const char* path);
 
@@ -72,6 +75,7 @@ public:
     bool read_once(); // 读数据
     HTTP_CODE parse_request(); // 主状态机
 
+    bool write_once();         // 非阻塞发送，true=全发完
     bool write_response();
 
     void set_timer(TimerNode* timer) { m_timer = timer; }
